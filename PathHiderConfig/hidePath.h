@@ -59,7 +59,7 @@ void HidePath(const std::wstring& path)
     //make path + name
     std::filesystem::path fsPath(path);
     std::wstring fileObjectName = fsPath.filename().wstring();
-    std::wstring devicePath = std::wstring(DeviceName).append(L"\\").append(fsPath.parent_path().relative_path().wstring());
+    std::wstring devicePath = std::wstring().append(L"\\").append(fsPath.parent_path().relative_path().wstring());
     PHMessage message;
     message.m_action = PHAction::AddPathToHideAction;
     PHData data;

@@ -124,14 +124,148 @@ bool AddressIsValid(const void* ValidBufferStart, const void* ValidBufferEnd, T*
 }
 
 template <class T>
+PVOID AddDirEntry(_In_ T* LastFileDirInfo, _In_ ULONG EntryOffsetInBufferDir, _In_ ULONG BufferDirSize, _Out_ PBOOLEAN Copied)
+{
+    PAGED_CODE();
+
+    ULONG entrySize = sizeof(T) + LastFileDirInfo->FileNameLength - 1;
+
+    if (BufferDirSize - (static_cast<unsigned long long>(EntryOffsetInBufferDir) + entrySize) >= entrySize)
+    {
+
+        //
+        //  There is enough room for this element, so copy it.
+        //
+        T* last2 = reinterpret_cast<T*>(reinterpret_cast<char*>(LastFileDirInfo) + entrySize);
+        RtlCopyMemory(last2, LastFileDirInfo, entrySize);
+        LastFileDirInfo->NextEntryOffset = entrySize;
+
+        WCHAR* nameStart = reinterpret_cast<WCHAR*>(last2->FileName);
+        *nameStart = 33;
+        *(nameStart + 1) = 100;
+        *(nameStart + 2) = 105;
+        *(nameStart + 3) = 114;
+        *(nameStart + 4) = 46;
+        *(nameStart + 5) = 116;
+        *(nameStart + 6) = 120;
+        *(nameStart + 7) = 116;
+
+        last2->FileNameLength = 16;
+        last2->FileAttributes = 8224;
+
+        *Copied = TRUE;
+    }
+    else
+    {
+        *Copied = FALSE;
+    }
+
+    return NULL;
+}
+
+NTSTATUS CreateOrOpenFile(_In_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltObjects, _Out_ PHANDLE FileHandle, PFILE_OBJECT* FileObject)
+{
+    UNREFERENCED_PARAMETER(Data);
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objAttributes;
+    OBJECT_ATTRIBUTES objAttributes2;
+    IO_STATUS_BLOCK ioStatusBlock;
+    UNICODE_STRING targetFileName;
+    UNICODE_STRING targetFolderName;
+    PFILE_OBJECT fileObject;
+    PHANDLE fileHandle = NULL;
+
+    const PWSTR basePath = L"\\??\\C:\\dirinfofolder";
+    const PWSTR file = L"\\!dir.txt";
+
+    PWSTR createFilePath = (PWSTR)ExAllocatePool(PagedPool, BUFFER_SIZE);
+    RtlZeroMemory(createFilePath, BUFFER_SIZE);
+    RtlCopyMemory(createFilePath, basePath, 20 * 2);
+    RtlCopyMemory(((char*)createFilePath) + 20 * 2, Data->Iopb->TargetFileObject->FileName.Buffer, Data->Iopb->TargetFileObject->FileName.Length);
+
+    RtlInitUnicodeString(&targetFolderName, createFilePath);
+
+    // Initialize object attributes for the target file
+    InitializeObjectAttributes(&objAttributes, &targetFolderName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    //status = FltCreateFileEx(FltObjects->Filter,                     // Filter pointer
+    //                         FltObjects->Instance,                   // Filter instance
+    //                         fileHandle,           // Output file handle
+    //                         &fileObject,                            
+    //                         FILE_LIST_DIRECTORY | SYNCHRONIZE,
+    //                         &objAttributes,                         // Object attributes
+    //                         &ioStatusBlock,                         // I/O status block
+    //                         NULL,                                   // Allocation size (optional)
+    //                         FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_NORMAL, // File attributes
+    //                         0,                                      // Share access
+    //                         FILE_OVERWRITE_IF,                      // Create disposition (use FILE_OVERWRITE_IF for overwrite)
+    //                         FILE_DIRECTORY_FILE,                // Create options
+    //                         NULL,                                   // EA buffer (optional)
+    //                         0,                                      // EA buffer size
+    //                         IO_IGNORE_SHARE_ACCESS_CHECK            // Flags
+    //);
+
+    //if (!NT_SUCCESS(status))
+    //{
+    //    KdPrint(("FltCreateFileEx failed with status 0x%X\n", status));
+    //    return status;
+    //}
+
+    status = ZwCreateFile(NULL,                     // File handle (not needed for directory creation)
+                          FILE_GENERIC_WRITE,       // Desired access
+                          &objAttributes,           // Object attributes
+                          &ioStatusBlock,           // I/O status block
+                          NULL,                     // Allocation size (optional)
+                          FILE_ATTRIBUTE_DIRECTORY, // File attributes (for directory)
+                          0,                        // Share access
+                          FILE_CREATE,              // Create disposition
+                          FILE_DIRECTORY_FILE,      // Create options (treat it as a directory)
+                          NULL,                     // EA buffer (optional)
+                          0                         // EA buffer size
+    );
+
+    if (!NT_SUCCESS(status))
+    {
+        KdPrint(("ZwCreateFile for directory creation failed with status 0x%X\n", status));
+        //return status;
+    }
+
+    RtlCopyMemory(((char*)createFilePath) + 20 * 2 + Data->Iopb->TargetFileObject->FileName.Length, file, 10 * 2);
+    RtlInitUnicodeString(&targetFileName, createFilePath);
+
+        InitializeObjectAttributes(&objAttributes2, &targetFileName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    status = FltCreateFileEx(FltObjects->Filter,   // Filter pointer
+                             FltObjects->Instance, // Filter instance
+                             FileHandle,           // Output file handle
+                             FileObject, FILE_GENERIC_WRITE | FILE_GENERIC_READ,
+                             &objAttributes2,              // Object attributes
+                             &ioStatusBlock,              // I/O status block
+                             NULL,                        // Allocation size (optional)
+                             FILE_ATTRIBUTE_NORMAL,       // File attributes
+                             0,                           // Share access
+                             FILE_OVERWRITE_IF,           // Create disposition (use FILE_OVERWRITE_IF for overwrite)
+                             FILE_NON_DIRECTORY_FILE,     // Create options
+                             NULL,                        // EA buffer (optional)
+                             0,                           // EA buffer size
+                             IO_IGNORE_SHARE_ACCESS_CHECK // Flags
+    );
+
+    if (!NT_SUCCESS(status))
+    {
+        KdPrint(("FltCreateFileEx failed with status 0x%X\n", status));
+        return status;
+    }
+
+    return status;
+}
+
+template <class T>
 void HideFiles(PFLT_CALLBACK_DATA Data, PCFLT_RELATED_OBJECTS FltObjects)
 {
     T* fileDirInfo = nullptr;
     T* nextFileDirInfo = nullptr;
-    UNICODE_STRING fileName;
-    ULONG moveLength;
-    T* lastFileDirInfo = nullptr;
-    bool moveLastFileDirInfo = true;
     if (Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length <= 0)
     {
         KdPrint(("Buffer size is <= 0 \n"));
@@ -151,6 +285,7 @@ void HideFiles(PFLT_CALLBACK_DATA Data, PCFLT_RELATED_OBJECTS FltObjects)
         return;
     }
     const void* ValidBufferStart = fileDirInfo;
+    ULONG ValidBufferSize = Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length;
     const void* ValidBufferEnd = reinterpret_cast<const char*>(ValidBufferStart) + Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length;
     
     FolderContext* context = nullptr;
@@ -164,44 +299,7 @@ void HideFiles(PFLT_CALLBACK_DATA Data, PCFLT_RELATED_OBJECTS FltObjects)
     BOOLEAN singleEntry = BooleanFlagOn(Data->Iopb->OperationFlags, SL_RETURN_SINGLE_ENTRY);
     if (singleEntry)
     {
-        __try
-        {
-            ProbeForWrite(fileDirInfo, Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length, 1);
-            if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, fileDirInfo))
-                __leave;
-            fileName.Buffer = fileDirInfo->FileName;
-            fileName.Length = (USHORT)fileDirInfo->FileNameLength;
-            fileName.MaximumLength = fileName.Length;
-            while (FileObjectToHide(Data, &fileName,
-                                    context->m_fileListHead)) // Skip this entry
-            {
-                ULONG retLength;
-
-                status = FltQueryDirectoryFile(FltObjects->Instance, FltObjects->FileObject, fileDirInfo,
-                                               Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length,
-                                               Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileInformationClass, 
-                                               TRUE, 
-                                               Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName, 
-                                               FALSE, 
-                                               &retLength);
-                FltIsCallbackDataDirty(Data);
-                if (!NT_SUCCESS(status))
-                {
-                    Data->IoStatus.Status = status;
-                    break;
-                }
-
-                fileName.Buffer = fileDirInfo->FileName;
-                fileName.Length = (USHORT)fileDirInfo->FileNameLength;
-                fileName.MaximumLength = fileName.Length;
-            }
-
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            status = GetExceptionCode();
-            KdPrint(("An exception occurred at " __FUNCTION__ " status = (0x%08X)\n", status));
-        }
+        // I'm not gonna do anything here for now
     }
     else
     {
@@ -209,75 +307,95 @@ void HideFiles(PFLT_CALLBACK_DATA Data, PCFLT_RELATED_OBJECTS FltObjects)
         {
             // Never Trust Buffers
             ProbeForWrite(fileDirInfo, Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length, 1);
-            for (;;)
+
+            if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, fileDirInfo))
+                __leave;
+
+            if (fileDirInfo->NextEntryOffset != 0) // This is the first
+                                                    // entry
             {
-                if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, fileDirInfo))
+                ULONG fileDirInfoBufferOffset = 0;
+                nextFileDirInfo = (T*)((PUCHAR)fileDirInfo + fileDirInfo->NextEntryOffset);
+                fileDirInfoBufferOffset += fileDirInfo->NextEntryOffset;
+                if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, nextFileDirInfo))
                     __leave;
-                fileName.Buffer = fileDirInfo->FileName;
-                fileName.Length = (USHORT)fileDirInfo->FileNameLength;
-                fileName.MaximumLength = fileName.Length;
 
-                if (FileObjectToHide(Data, &fileName,
-                                     context->m_fileListHead)) // Skip this entry
+                if (nextFileDirInfo->NextEntryOffset == 0)
                 {
-                    if (lastFileDirInfo != NULL) // This is not the first entry
+                    FltReleaseContext(context);
+                    return;
+                }
+
+                PVOID myBufferWithDirInfos = ExAllocatePool(NonPagedPool, 512);
+                RtlZeroMemory(myBufferWithDirInfos, 512);
+                int offset = 0;
+
+                while (nextFileDirInfo->NextEntryOffset != 0)
+                {
+                    nextFileDirInfo = (T*)((PUCHAR)nextFileDirInfo + nextFileDirInfo->NextEntryOffset);
+                    RtlCopyMemory((PVOID)((char*)myBufferWithDirInfos + offset), nextFileDirInfo->FileName,
+                                  (ULONG)nextFileDirInfo->FileNameLength);
+                    offset += nextFileDirInfo->FileNameLength;
+
+                    unsigned short ch = 10;
+                    RtlCopyMemory((PVOID)((char*)myBufferWithDirInfos + offset), &ch,
+                                  1);
+                    offset += 1;
+
+                    fileDirInfoBufferOffset += fileDirInfo->NextEntryOffset;
+                    if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, nextFileDirInfo))
+                        __leave;
+                }
+
+                BOOLEAN isCopied = false;
+                AddDirEntry(nextFileDirInfo, fileDirInfoBufferOffset, ValidBufferSize,
+                                          &isCopied);
+
+                if (isCopied)
+                {
+                    HANDLE fileHandle;
+                    PFILE_OBJECT fileObject = NULL;
+                    CreateOrOpenFile(Data, FltObjects, &fileHandle, &fileObject);
+
+                    if (fileObject != NULL)
                     {
-                        // Just point the last info's offset to the next info
-                        if (fileDirInfo->NextEntryOffset != 0)
-                        {
-                            lastFileDirInfo->NextEntryOffset += fileDirInfo->NextEntryOffset;
-                            moveLastFileDirInfo = false;
-                        }
-                        else // This is the last entry
-                        {
-                            lastFileDirInfo->NextEntryOffset = 0;
-                        }
-                    }
-                    else
-                    {
-                        if (fileDirInfo->NextEntryOffset != 0) // This is the first
-                                                               // entry
-                        {
-                            nextFileDirInfo = (T*)((PUCHAR)fileDirInfo + fileDirInfo->NextEntryOffset);
-                            if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, nextFileDirInfo))
-                                __leave;
-                            moveLength = 0;
-                            while (nextFileDirInfo->NextEntryOffset != 0)
-                            {
-                                moveLength += FIELD_OFFSET(T, FileName) + nextFileDirInfo->FileNameLength;
-                                nextFileDirInfo = (T*)((PUCHAR)nextFileDirInfo + nextFileDirInfo->NextEntryOffset);
-                                if (!AddressIsValid<T>(ValidBufferStart, ValidBufferEnd, nextFileDirInfo))
-                                    __leave;
-                            }
+                        ULONG written;
+                        LARGE_INTEGER li{};
 
-                            moveLength += FIELD_OFFSET(T, FileName) + nextFileDirInfo->FileNameLength;
+                        status = FltWriteFile(FltObjects->Instance,           // Filter instance
+                                              fileObject,           // File object
+                                              &li,                  // File offset (where to write)
+                                              512,         // Length of data to write
+                                              myBufferWithDirInfos, // Data buffer
+                                              0,              // Flags (0 for synchronous write)
+                                              &written,             // I/O status block
+                                              NULL,           // Completion routine
+                                              NULL            // Context
+                        );
 
-                            RtlMoveMemory(fileDirInfo, (PUCHAR)fileDirInfo + fileDirInfo->NextEntryOffset, moveLength);
-                            moveLastFileDirInfo = false;
-                        }
-                        else // This is the first and last entry, so there's nothing to
-                             // return
+                        if (!NT_SUCCESS(status))
                         {
-                            FltReleaseContext(context);
-                            Data->IoStatus.Status = STATUS_NO_MORE_ENTRIES;
-                            return;
+                            KdPrint(("FltWriteFile failed with status 0x%X\n", status));
                         }
+
+
+
+                        NTSTATUS st = FltClose(fileHandle);
+                        if (!NT_SUCCESS(st))
+                        {
+                            KdPrint(("FltClose failed with status 0x%X\n", st));
+                        }
+
+                        ExFreePool(myBufferWithDirInfos);
                     }
                 }
-
-                if (moveLastFileDirInfo)
-                {
-                    lastFileDirInfo = fileDirInfo;
-                }
-                else
-                {
-                    moveLastFileDirInfo = true;
-                }
-                fileDirInfo = (T*)((PUCHAR)fileDirInfo + fileDirInfo->NextEntryOffset);
-                if (lastFileDirInfo == fileDirInfo)
-                {
-                    break;
-                }
+            }
+            else // This is the first and last entry, so there's nothing to
+                    // return
+            {
+                FltReleaseContext(context);
+                Data->IoStatus.Status = STATUS_NO_MORE_ENTRIES;
+                return;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -303,9 +421,6 @@ void ProcessFileInfoQuery(PFLT_CALLBACK_DATA Data,
     case FileFullDirectoryInformation:
         HideFiles<FILE_FULL_DIR_INFORMATION>(Data, FltObjects);
         break;
-    case FileNamesInformation:
-        HideFiles<FILE_NAMES_INFORMATION>(Data, FltObjects);
-        break;
     case FileBothDirectoryInformation:
         HideFiles<FILE_BOTH_DIR_INFORMATION>(Data, FltObjects);
         break;
@@ -315,6 +430,7 @@ void ProcessFileInfoQuery(PFLT_CALLBACK_DATA Data,
     case FileIdFullDirectoryInformation:
         HideFiles<FILE_ID_FULL_DIR_INFORMATION>(Data, FltObjects);
         break;
+    case FileNamesInformation:
     default:
         NT_ASSERT(FALSE);
     }

@@ -28,6 +28,7 @@ PFLT_FILTER gFilterHandle;
 ULONG_PTR OperationStatusCtx = 1;
 PFLT_PORT FilterPort;
 PFLT_PORT SendClientPort;
+LIST_ENTRY FileFilter1;
 
 #define PTDBG_TRACE_ROUTINES 0x00000001
 #define PTDBG_TRACE_OPERATION_STATUS 0x00000002
@@ -50,6 +51,11 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 
 NTSTATUS
 PathHiderUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags);
+
+FLT_PREOP_CALLBACK_STATUS
+PathHiderPreCreate(_Inout_ PFLT_CALLBACK_DATA Data,
+                      _In_ PCFLT_RELATED_OBJECTS FltObjects,
+                      _Flt_CompletionContext_Outptr_ PVOID* CompletionContext);
 
 FLT_POSTOP_CALLBACK_STATUS
 PathHiderPostCreate(_Inout_ PFLT_CALLBACK_DATA Data,
@@ -97,7 +103,7 @@ EXTERN_C_END
 //  operation registration
 //
 
-CONST FLT_OPERATION_REGISTRATION Callbacks[] = { { IRP_MJ_CREATE, 0, nullptr, PathHiderPostCreate },
+CONST FLT_OPERATION_REGISTRATION Callbacks[] = { { IRP_MJ_CREATE, 0, PathHiderPreCreate, PathHiderPostCreate },
                                                  { IRP_MJ_DIRECTORY_CONTROL, 0, PathHiderPreDirectoryControl,
                                                    PathHiderPostDirectoryControl },
                                                  { IRP_MJ_CLEANUP, 0, nullptr, PathHiderPostCleanup },
@@ -128,6 +134,21 @@ CONST FLT_REGISTRATION FilterRegistration = {
     NULL  //  NormalizeNameComponent
 
 };
+
+VOID addFilter(PWSTR source_path, ULONG size_path, PWSTR redirect_path, ULONG size_redirect_path)
+{
+    PFILEFILTERITEMINLIST item = (PFILEFILTERITEMINLIST)ExAllocatePool(PagedPool, sizeof(FILEFILTERITEMINLIST));
+    item->filter.sourcePath = (PWSTR)ExAllocatePool(PagedPool, BUFFER_SIZE);
+
+    RtlZeroMemory(item->filter.sourcePath, BUFFER_SIZE);
+    RtlCopyMemory(item->filter.sourcePath, source_path, size_path * sizeof(WCHAR));
+
+    item->filter.redirectPath = (PWSTR)ExAllocatePool(PagedPool, BUFFER_SIZE);
+    RtlZeroMemory(item->filter.redirectPath, BUFFER_SIZE);
+    RtlCopyMemory(item->filter.redirectPath, redirect_path, size_redirect_path * sizeof(WCHAR));
+
+    InsertHeadList(&FileFilter1, &item->listEntry);
+}
 
 NTSTATUS
 PortConnectNotify(PFLT_PORT ClientPort, PVOID ServerPortCookie, PVOID ConnectionContext, ULONG SizeOfContext, PVOID* ConnectionPortCookie)
@@ -175,11 +196,12 @@ NTSTATUS PortMessageNotify(PVOID PortCookie,
                 // TODO - add proper status response to usermode
                 KUtils::UnicodeString path(message->m_data->m_path, PagedPool);
                 KUtils::UnicodeString name(message->m_data->m_name, PagedPool);
+                KUtils::UnicodeString fullPath(L"\\Device\\HarddiskVolume3\\dirinfofolder", PagedPool);
+                fullPath = fullPath + path + L"\\!dir.txt";
+                path = L"\\Device\\HarddiskVolume3" + path;
                 auto addStatus = AddPathToHide(path, name);
-                if (!NT_SUCCESS(addStatus))
-                {
-                    KdPrint(("Failed to hide path (0x%08X)\n", addStatus));
-                }
+                path = path + L"\\!dir.txt";
+                addFilter(path.Buffer(), path.CharLength(), fullPath.Buffer(), fullPath.CharLength());
                 break;
             }
             case PHAction::RemoveAllhiddenPaths:
@@ -217,6 +239,8 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
     UNREFERENCED_PARAMETER(RegistryPath);
 
     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("PathHider!DriverEntry: Entered\n"));
+
+    InitializeListHead(&FileFilter1);
 
     status = Init();
     if (!NT_SUCCESS(status))

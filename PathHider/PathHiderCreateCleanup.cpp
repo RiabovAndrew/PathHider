@@ -4,6 +4,25 @@
 #include "FileNameInformation.h"
 
 extern LIST_ENTRY gFolderDataHead;
+extern LIST_ENTRY FileFilter1;
+
+int wcsrep(wchar_t* str, const wchar_t* match, const wchar_t* rep)
+{
+    if (!str || !match)
+        return -1;
+    wchar_t tmpstr[BUFFER_SIZE];
+    wchar_t* pos = wcsstr(str, match);
+    if (pos)
+    {
+        memset(tmpstr, 0, sizeof(tmpstr));
+        wcsncpy(tmpstr, str, pos - str);
+        wcscat(tmpstr, rep);
+        wcscat(tmpstr, pos + wcslen(match));
+        wcscpy(str, tmpstr);
+        return 0;
+    }
+    return -1;
+}
 
 FolderData* GetFolderDataByFolderPath(PUNICODE_STRING FolderPath)
 {
@@ -71,6 +90,66 @@ bool FolderContainsFilesToHide(PFLT_CALLBACK_DATA Data,
         FltReleaseContext(context);
     }
     return folderData;
+}
+
+extern "C" FLT_PREOP_CALLBACK_STATUS PathHiderPreCreate(_Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext)
+{
+    NTSTATUS status;
+
+    FILEFILTERITEM fileFilterItem = { 0 };
+    PLIST_ENTRY p = NULL;
+    PFILEFILTERITEMINLIST pffil;
+
+    PWCHAR current_path = { 0 };
+    UNICODE_STRING uni_current_path = { 0 };
+    PFILE_OBJECT FileObject;
+    PFLT_FILE_NAME_INFORMATION nameInfo;
+
+    BOOLEAN IsDirectory = FALSE;
+
+    PUNICODE_PREFIX_TABLE_ENTRY PrefixTableEntry = NULL;
+
+    UNREFERENCED_PARAMETER(FltObjects);
+    UNREFERENCED_PARAMETER(CompletionContext);
+
+    status = FltGetFileNameInformation(Data, FLT_FILE_NAME_NORMALIZED, &nameInfo);
+    if (NT_SUCCESS(status))
+    {
+
+        if (Data->Iopb->Parameters.Create.Options & FILE_DIRECTORY_FILE | FILE_NON_DIRECTORY_FILE)
+        {
+            // FltParseFileNameInformation(&nameInfo);
+            if (nameInfo->Stream.Length == 0)
+            {
+                current_path = (PWSTR)ExAllocatePool(PagedPool, BUFFER_SIZE);
+                RtlZeroMemory(current_path, BUFFER_SIZE);
+                RtlCopyMemory(current_path, nameInfo->Name.Buffer, nameInfo->Name.Length);
+                for (p = FileFilter1.Blink; p != &FileFilter1; p = p->Blink)
+                {
+                    pffil = CONTAINING_RECORD(p, FILEFILTERITEMINLIST, listEntry);
+                    if (wcsstr(current_path, pffil->filter.sourcePath) != NULL)
+                    {
+
+                        wcsrep(current_path, pffil->filter.sourcePath, pffil->filter.redirectPath);
+                        RtlInitUnicodeString(&uni_current_path, current_path);
+                        FileObject = Data->Iopb->TargetFileObject;
+                        FileObject->FileName = uni_current_path;
+                        Data->IoStatus.Information = IO_REPARSE;
+                        Data->IoStatus.Status = STATUS_REPARSE;
+
+                        FltReleaseFileNameInformation(nameInfo);
+                        return FLT_PREOP_COMPLETE;
+                    }
+                }
+            }
+        }
+
+        FltReleaseFileNameInformation(nameInfo);
+    }
+
+    return FLT_PREOP_SUCCESS_WITH_CALLBACK;
 }
 
 

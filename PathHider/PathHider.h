@@ -8,6 +8,8 @@
 #include "Constants.h"
 #include "Memory.h"
 
+#define BUFFER_SIZE 1024
+
 EXTERN_C_START
 NTSTATUS
 ZwQueryInformationProcess(_In_ HANDLE ProcessHandle,
@@ -39,6 +41,20 @@ const FLT_CONTEXT_REGISTRATION ContextRegistration[] = {
       nullptr, nullptr },
     { FLT_CONTEXT_END }
 };
+
+//  Defines the command structure between the utility and the filter.
+typedef struct _FILEFILTERITEM
+{
+    PWSTR sourcePath;
+    PWSTR redirectPath;
+} FILEFILTERITEM, *PFILEFILTERITEM;
+
+// Defines the structure in driver
+typedef struct _FILEFILTERITEMINLIST
+{
+    FILEFILTERITEM filter;
+    LIST_ENTRY listEntry;
+} FILEFILTERITEMINLIST, *PFILEFILTERITEMINLIST;
 
 EXTERN_C_END
 
